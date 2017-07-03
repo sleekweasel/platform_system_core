@@ -48,8 +48,8 @@
 // Android Wear has been using port 5601 in all of its documentation/tooling,
 // but we search for emulators on ports [5554, 5555 + ADB_LOCAL_TRANSPORT_MAX].
 // Avoid stomping on their port by limiting the number of emulators that can be
-// connected.
-#define ADB_LOCAL_TRANSPORT_MAX 16
+// connected, at least by default.
+static int adb_local_transport_max = 16;
 
 static std::mutex& local_transports_lock = *new std::mutex();
 
@@ -57,7 +57,7 @@ static std::mutex& local_transports_lock = *new std::mutex();
  * local transport it is connected. The list is used to detect when we're
  * trying to connect twice to a given local transport.
  */
-static atransport*  local_transports[ ADB_LOCAL_TRANSPORT_MAX ];
+static atransport**  local_transports = 0;
 #endif /* ADB_HOST */
 
 static int remote_read(apacket *p, atransport *t)
@@ -177,7 +177,7 @@ int local_connect_arbitrary_ports(int console_port, int adb_port, std::string* e
 
 static void PollAllLocalPortsForEmulator() {
     int port = DEFAULT_ADB_LOCAL_TRANSPORT_PORT;
-    int count = ADB_LOCAL_TRANSPORT_MAX;
+    int count = adb_local_transport_max;
 
     // Try to connect to any number of running emulator instances.
     for ( ; count > 0; count--, port += 2 ) {
@@ -398,6 +398,10 @@ void local_init(int port)
 #if ADB_HOST
     func = client_socket_thread;
     debug_name = "client";
+
+    int env_max = atoi(getenv("ADB_LOCAL_TRANSPORT_MAX"));
+    if (env_max) { adb_local_transport_max = env_max; }
+    local_transports = (atransport**)calloc(adb_local_transport_max, sizeof(atransport*));
 #else
     // For the adbd daemon in the system image we need to distinguish
     // between the device, and the emulator.
@@ -425,7 +429,7 @@ static void remote_kick(atransport *t)
 #if ADB_HOST
     int  nn;
     std::lock_guard<std::mutex> lock(local_transports_lock);
-    for (nn = 0; nn < ADB_LOCAL_TRANSPORT_MAX; nn++) {
+    for (nn = 0; nn < adb_local_transport_max; nn++) {
         if (local_transports[nn] == t) {
             local_transports[nn] = NULL;
             break;
@@ -461,7 +465,7 @@ static void remote_close(atransport *t)
 static atransport* find_emulator_transport_by_adb_port_locked(int adb_port)
 {
     int i;
-    for (i = 0; i < ADB_LOCAL_TRANSPORT_MAX; i++) {
+    for (i = 0; i < adb_local_transport_max; i++) {
         int local_port;
         if (local_transports[i] && local_transports[i]->GetLocalPortForEmulator(&local_port)) {
             if (local_port == adb_port) {
@@ -494,7 +498,7 @@ atransport* find_emulator_transport_by_console_port(int console_port)
 int get_available_local_transport_index_locked()
 {
     int i;
-    for (i = 0; i < ADB_LOCAL_TRANSPORT_MAX; i++) {
+    for (i = 0; i < adb_local_transport_max; i++) {
         if (local_transports[i] == NULL) {
             return i;
         }
@@ -533,7 +537,7 @@ int init_socket_transport(atransport *t, int s, int adb_port, int local)
             fail = -1;
         } else if (index < 0) {
             // Too many emulators.
-            D("cannot register more emulators. Maximum is %d", ADB_LOCAL_TRANSPORT_MAX);
+            D("cannot register more emulators. Maximum is %d", adb_local_transport_max);
             fail = -1;
         } else {
             local_transports[index] = t;

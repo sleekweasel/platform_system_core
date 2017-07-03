@@ -52,6 +52,8 @@ struct LocalSocketType {
     bool available;
 };
 
+static const char* adb_localhost = getenv("ADB_LOCALHOST");
+
 static auto& kLocalSocketTypes = *new std::unordered_map<std::string, LocalSocketType>({
 #if ADB_HOST
     { "local", { ANDROID_SOCKET_NAMESPACE_FILESYSTEM, !ADB_WINDOWS } },
@@ -112,7 +114,9 @@ bool parse_tcp_socket_spec(const std::string& spec, std::string* hostname, int* 
 
 static bool tcp_host_is_local(const std::string& hostname) {
     // FIXME
-    return hostname.empty() || hostname == "localhost";
+    // Allow connection from remote clients if ADB_LOCALHOST is set (to match ADB_SERVER_SOCKET)
+    std::string s = std::string(adb_localhost && *adb_localhost ? adb_localhost : "");
+    return s.find(hostname) != std::string::npos || hostname == "localhost";
 }
 
 bool is_socket_spec(const std::string& spec) {
@@ -156,9 +160,13 @@ int socket_spec_connect(const std::string& spec, std::string* error) {
 #if ADB_HOST
             result = network_connect(hostname, port, SOCK_STREAM, 0, error);
 #else
-            // Disallow arbitrary connections in adbd.
-            *error = "adbd does not support arbitrary tcp connections";
-            return -1;
+            if (adb_localhost && *adb_localhost) {
+                result = network_connect(hostname, port, SOCK_STREAM, 0, error);
+            } else {
+                // Disallow arbitrary connections in adbd.
+                *error = "adbd does not support arbitrary tcp connections without ADB_LOCALHOST";
+                return -1;
+            }
 #endif
         }
 
@@ -195,13 +203,13 @@ int socket_spec_listen(const std::string& spec, std::string* error, int* resolve
         }
 
         int result;
-        if (hostname.empty() && gListenAll) {
+        if ((hostname.empty() && gListenAll) || (adb_localhost && *adb_localhost)) {
             result = network_inaddr_any_server(port, SOCK_STREAM, error);
         } else if (tcp_host_is_local(hostname)) {
             result = network_loopback_server(port, SOCK_STREAM, error);
         } else {
             // TODO: Implement me.
-            *error = "listening on specified hostname currently unsupported";
+            *error = "listening on specified hostname currently unsupported without ADB_LOCALHOST";
             return -1;
         }
 

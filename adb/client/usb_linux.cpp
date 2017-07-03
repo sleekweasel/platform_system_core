@@ -120,6 +120,71 @@ static inline bool contains_non_digit(const char* name) {
     return false;
 }
 
+static int iterate_numbers(const char* list, int* rejects) {
+    const char* p = list;
+    char* end;
+    int count = 0;
+    while(true) {
+        long value = strtol(p, &end, 16);
+        D("%d, %p ... %p (%c) = %ld (...%s)\n", count, p, end, *end, value, p);
+        if (p == end) return count;
+        p = end + 1;
+        count++;
+        if (rejects) rejects[count] = value;
+        if (!*end || !*p) return count;
+    }
+}
+
+int* compute_reject_filter() {
+    char* filter = getenv("ADB_VID_PID_FILTER");
+    if (!filter || !*filter) {
+        filter = getenv("HOME");
+        if (filter) {
+            const char* suffix = "/.android/vidpid.filter";
+            filter = (char*) malloc(strlen(filter) + strlen(suffix) + 1);
+            *filter = 0;
+            strcat(filter, getenv("HOME"));
+            strcat(filter, suffix);
+        }
+    }
+    if (!filter || !*filter) {
+        return (int*) calloc(sizeof(int), 1);
+    }
+    if (*filter == '.' || *filter == '/') {
+        FILE *f = fopen(filter, "r");
+        if (!f) {
+            if (getenv("ADB_VID_PID_FILTER")) {
+                // Only report failure for non-default value
+                fprintf(stderr, "Unable to open file '%s'\n", filter);
+            }
+            return (int*) calloc(sizeof(int), 1);
+        }
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);  //same as rewind(f);
+        filter = (char*) malloc(fsize + 1);  // Yes, it's a leak.
+        fsize = fread(filter, 1, fsize, f);
+        fclose(f);
+        filter[fsize] = 0;
+    }
+    int count = iterate_numbers(filter, 0);
+    if (count % 2) printf("WARNING: ADB_VID_PID_FILTER contained %d items - should be paired\n", count);
+    int* rejects = (int*)malloc((count + 1) * sizeof(int));
+    *rejects = count;
+    iterate_numbers(filter, rejects);
+    return rejects;
+}
+
+static int* rejects = 0;
+static bool reject_this_device(int vid, int pid) {
+    if (!*rejects) return false;
+    for ( int len = *rejects; len > 0; len -= 2 ) {
+        D("%4x:%4x vs %4x:%4x\n", vid, pid, rejects[len - 1], rejects[len]);
+        if ( vid == rejects[len - 1] && pid == rejects[len] ) return false;
+    }
+    return true;
+}
+
 static void find_usb_device(const std::string& base,
                             void (*register_device_callback)(const char*, const char*,
                                                              unsigned char, unsigned char, int, int,
@@ -181,6 +246,12 @@ static void find_usb_device(const std::string& base,
             vid = device->idVendor;
             pid = device->idProduct;
             DBGX("[ %s is V:%04x P:%04x ]\n", dev_name.c_str(), vid, pid);
+
+            if(reject_this_device(vid, pid)) {
+                D("usb_config_vid_pid_reject");
+                unix_close(fd);
+                continue;
+            }
 
                 // should have config descriptor next
             config = (struct usb_config_descriptor *)bufptr;
@@ -580,9 +651,14 @@ static void register_device(const char* dev_name, const char* dev_path, unsigned
 static void device_poll_thread() {
     adb_thread_setname("device poll");
     D("Created device thread");
+    rejects = compute_reject_filter();
     while (true) {
         // TODO: Use inotify.
-        find_usb_device("/dev/bus/usb", register_device);
+        const char* bus_root = getenv("ADB_DEV_BUS_USB");
+        if (!bus_root || !*bus_root) {
+            bus_root = "/dev/bus/usb";
+        }
+        find_usb_device(bus_root, register_device);
         kick_disconnected_devices();
         std::this_thread::sleep_for(1s);
     }
