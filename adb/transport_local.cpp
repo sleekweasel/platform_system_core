@@ -399,7 +399,8 @@ void local_init(int port)
     func = client_socket_thread;
     debug_name = "client";
 
-    int env_max = atoi(getenv("ADB_LOCAL_TRANSPORT_MAX"));
+    char* env_max_s = getenv("ADB_LOCAL_TRANSPORT_MAX");
+    int env_max = atoi(env_max_s ? env_max_s : "");
     if (env_max) { adb_local_transport_max = env_max; }
     local_transports = (atransport**)calloc(adb_local_transport_max, sizeof(atransport*));
 #else
