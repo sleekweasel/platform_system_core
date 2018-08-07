@@ -192,6 +192,26 @@ static void find_usb_device(const std::string& base,
     std::unique_ptr<DIR, int(*)(DIR*)> bus_dir(opendir(base.c_str()), closedir);
     if (!bus_dir) return;
 
+    // ------------------- ADB_DEV_BUS_USB
+    static char* s_bus_root = 0;
+    if (!s_bus_root) {
+        const char* bus_root = getenv("ADB_DEV_BUS_USB");
+        if (!bus_root || !*bus_root) {
+            bus_root = "/dev/bus/usb";
+        }
+        D("Device buses %s", bus_root);
+        int l = strlen(bus_root) + 2;
+        s_bus_root = (char*)malloc(l);
+        strncpy(s_bus_root, bus_root, l); // Two terminating nulls.
+        char* p = s_bus_root;
+        while (( l = strcspn(p, ",") )) {
+            p += l + 1;
+            D("Device bus tail %s", p);
+            p[-1] = 0;
+        }
+    }
+    // ------------------- ADB_DEV_BUS_USB ends
+
     dirent* de;
     while ((de = readdir(bus_dir.get())) != 0) {
         if (contains_non_digit(de->d_name)) continue;
@@ -219,6 +239,14 @@ static void find_usb_device(const std::string& base,
             if (is_known_device(dev_name.c_str())) {
                 continue;
             }
+
+    // ------------------- ADB_DEV_BUS_USB
+            const char* bus_root = s_bus_root;
+            while (!strstr(dev_name.c_str(), bus_root)) {
+                bus_root += strlen(bus_root) + 1;
+            }
+            if (!*bus_root) continue;
+    // ------------------- ADB_DEV_BUS_USB ends
 
             int fd = unix_open(dev_name.c_str(), O_RDONLY | O_CLOEXEC);
             if (fd == -1) {
@@ -654,11 +682,7 @@ static void device_poll_thread() {
     rejects = compute_reject_filter();
     while (true) {
         // TODO: Use inotify.
-        const char* bus_root = getenv("ADB_DEV_BUS_USB");
-        if (!bus_root || !*bus_root) {
-            bus_root = "/dev/bus/usb";
-        }
-        find_usb_device(bus_root, register_device);
+        find_usb_device("/dev/bus/usb", register_device);
         kick_disconnected_devices();
         std::this_thread::sleep_for(1s);
     }
